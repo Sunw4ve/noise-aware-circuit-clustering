@@ -2,7 +2,7 @@ import random
 import copy
 import networkx as nx
 import numpy as np
-from clusterparser import ClusterParser
+from src.clusterparser import ClusterParser
 
 
 def generate_circuit_graph(cp: ClusterParser) -> nx.Graph:

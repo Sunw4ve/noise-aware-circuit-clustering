@@ -1,6 +1,6 @@
 from collections import defaultdict
 import numpy as np
-from clusterparser import ClusterParser
+from src.clusterparser import ClusterParser
 from sklearn.linear_model import LinearRegression
 import matplotlib.pyplot as plt
 

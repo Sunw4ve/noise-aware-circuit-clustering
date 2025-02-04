@@ -4,8 +4,8 @@ import hdbscan
 from typing import List
 import pickle
 import os
-from lef_parser import LefParser
-from def_parser import DefParser
+from src.lef_parser import LefParser
+from src.def_parser import DefParser
 
 STD_CELL = 0
 MACRO = 1
@@ -25,6 +25,7 @@ class ClusterParser(object):
             net_file (str, optional): .nets file. Defaults to None. Not necessary for clustering. Only used for Rent's rule and small world analysis.
             macro_criteria (str, optional): if set, cells having height/width >= macro_criteria will be macros
         """
+        def_parser, lef_parser = None, None
         if node_file.endswith('.nodes'):
             self.__load_nodes(node_file, macro_criteria)
         elif node_file.endswith('.lef'):

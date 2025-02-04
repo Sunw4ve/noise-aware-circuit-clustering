@@ -5,8 +5,8 @@ Email: tricao@utdallas.edu
 Date: August 2016
 """
 
-from def_util import *
-from util import *
+from src.def_util import *
+from src.util import *
 
 
 class DefParser:

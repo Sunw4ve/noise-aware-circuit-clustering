@@ -6,8 +6,8 @@ Date: August 2016
 """
 # from lef_util import *
 # from util import *
-from lef_util import *
-from util import *
+from src.lef_util import *
+from src.util import *
 
 SCALE = 2000
 
