@@ -18,7 +18,7 @@ In DREAMPlace:
 - rerun DREAMPlace
 - go to `results/<benchmark>`, copy paste everything in `snapshots` folder to designated folder in noise-aware-circuit-clustering repo
 - edit `.ipynb` file accordingly
-- run `.ipynb` file
+- run `.ipynb` file to analyze clusters and ICNs given your snapshots
 
 Requirements
 ------------
