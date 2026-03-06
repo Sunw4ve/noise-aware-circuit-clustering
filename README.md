@@ -17,6 +17,7 @@ In DREAMPlace:
 - add at the end of the file: `"dump_snapshot_interval" : 100, "dump_snapshot_count" : 10`
 - rerun DREAMPlace
 - go to `results/<benchmark>`, copy paste everything in `snapshots` folder to designated folder in noise-aware-circuit-clustering repo
+- copy paste benchmark's `.nodes` and `.nets` if you haven't yet
 - edit `.ipynb` file accordingly
 - run `.ipynb` file to analyze clusters and ICNs given your snapshots
 
