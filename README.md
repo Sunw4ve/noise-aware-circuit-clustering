@@ -2,6 +2,20 @@
 
 This repository contains the code for the paper "Noise-Aware Circuit Clustering based on Analytical Placement Evolution" Published in SLIP '24: 2024 ACM International Workshop on System-Level Interconnect Pathfinding. The paper is available at [ACM Digital Library](https://dl.acm.org/doi/10.1145/3708358.3709348).
 
+Fork Notes: if you change the code
+------------
+- rm -rf `build` and `install` directories
+- `mkdir build` and `cd build`
+- `cmake .. -DCMAKE_INSTALL_PREFIX=/DREAMPlace/install -DPython_EXECUTABLE=$(which python) -DCMAKE_DISABLE_FIND_PACKAGE_CUDA=ON`
+- `make -j<# of threads to use for job>`
+- `make install`
+
+Fork Notes: how to reproduce clustering pipeline
+------------
+In DREAMPlace:
+- Go to `test/<benchmark suite>/<benchmark>.json`
+- add at the end of the file: `"dump_snapshot_interval" : 100, "dump_snapshot_count" : 10`
+
 Requirements
 ------------
 - Python 3.6 or higher
