@@ -14,7 +14,7 @@ Fork Notes: how to reproduce clustering pipeline
 ------------
 In DREAMPlace:
 - Go to `test/<benchmark suite>/<benchmark>.json`
-- add at the end of the file: `"dump_snapshot_interval" : 50, "dump_snapshot_count" : 12`
+- add at the end of the file: `"dump_snapshot_interval" : 50, "dump_snapshot_start" : 200, "dump_snapshot_count" : 20`
 - rerun DREAMPlace
 - go to `results/<benchmark>`, copy paste everything in `snapshots` folder to designated folder in noise-aware-circuit-clustering repo
 - from DREAMPlace, copy paste `benchmarks/<benchmark suite>/<benchmark>/<benchmark>.nodes` and `benchmarks/<benchmark suite>/<benchmark>/<benchmark>.nets` if you haven't yet
