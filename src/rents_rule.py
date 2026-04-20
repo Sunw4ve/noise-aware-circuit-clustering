@@ -221,28 +221,88 @@ class RentsRuleCalculator(object):
         plt.legend(fontsize=14)
 
     def intra_rents(self):
-        bins2 = [8, 16, 32, 64, 128]
-        cluster_nodes = []
-        cluster_pins = []
 
-        for i in range(len(self.cp.unique_labels)):
-            cluster_nodes_i, cluster_pins_i = self.__power_law__(bins2, i)
-            cluster_nodes.append(cluster_nodes_i)
-            cluster_pins.append(cluster_pins_i)
+        bins2 = [4, 8, 16, 32, 64, 128]
+
+        # Precompute: for each cluster label, which nodes belong to it
+        # so we don't have to scan all nodes for every cluster
+        cluster_nodes_map = defaultdict(list)
+        for node in range(len(self.x_pos)):
+            label = self.cp.labels[node]
+            if label != -1:
+                cluster_nodes_map[label].append(node)
+
+        # Precompute: for each cluster label, which net indices touch it
+        cluster_nets_map = defaultdict(list)
+        for net_idx, net in enumerate(self.cp.net_nodes):
+            seen_labels = set()
+            for pin in net:
+                node = pin[0]
+                if node >= len(self.x_pos):
+                    continue
+                label = self.cp.labels[node]
+                if label != -1 and label not in seen_labels:
+                    seen_labels.add(label)
+                    cluster_nets_map[label].append(net_idx)
+
         intra_ps = []
         intra_ks = []
 
-        for i in range(len(cluster_nodes)):
-            if min(cluster_pins[i]) <= 1:
+        for target_label in sorted(cluster_nodes_map.keys()):
+            intercell_num_nodes = defaultdict(int)
+            intercell_num_pins = defaultdict(int)
+
+            for b in bins2:
+                for node in cluster_nodes_map[target_label]:
+                    i = int(self.x_pos[node] * b / self.W)
+                    j = int(self.y_pos[node] * b / self.H)
+                    intercell_num_nodes[(i, j, b)] += 1
+
+                for net_idx in cluster_nets_map[target_label]:
+                    net = self.cp.net_nodes[net_idx]
+                    blocks_intercell_cnt = defaultdict(lambda: [False, False])
+                    for pin in net:
+                        node = pin[0]
+                        if node >= len(self.x_pos):
+                            continue
+                        i = int(self.x_pos[node] * b / self.W)
+                        j = int(self.y_pos[node] * b / self.H)
+                        if self.cp.labels[node] == target_label:
+                            blocks_intercell_cnt[(i, j, b)][0] = True
+                        else:
+                            blocks_intercell_cnt[(i, j, b)][1] = True
+                    # ignore nets inside a cluster
+                    if (
+                        len(blocks_intercell_cnt) == 1
+                        and blocks_intercell_cnt[(i, j, b)][0]
+                        and blocks_intercell_cnt[(i, j, b)][1]
+                    ):
+                        block = next(iter(blocks_intercell_cnt))
+                        intercell_num_pins[block] += 1
+                    for block in blocks_intercell_cnt:
+                        if blocks_intercell_cnt[(i, j, b)][0]:
+                            intercell_num_pins[block] += 1
+
+            intercell_num_nodes_list = []
+            intercell_num_pins_list = []
+            for block in intercell_num_nodes:
+                if intercell_num_nodes[block] > 3:
+                    if intercell_num_pins[block] == 0:
+                        continue
+                    intercell_num_nodes_list.append(intercell_num_nodes[block])
+                    intercell_num_pins_list.append(intercell_num_pins[block])
+
+            if not intercell_num_pins_list or min(intercell_num_pins_list) <= 1:
                 continue
-            intra_log_gates = np.log(cluster_nodes[i]).reshape(-1, 1)
-            intra_log_pins = np.log(cluster_pins[i]).reshape(-1, 1)
+
+            intra_log_gates = np.log(intercell_num_nodes_list).reshape(-1, 1)
+            intra_log_pins = np.log(intercell_num_pins_list).reshape(-1, 1)
             model = LinearRegression()
             model.fit(intra_log_gates, intra_log_pins)
-            intra_p = model.coef_[0][0]
-            intra_k = np.exp(model.intercept_[0])
-            intra_ps.append(intra_p)
-            intra_ks.append(intra_k)
+            intra_ps.append(model.coef_[0][0])
+            intra_ks.append(np.exp(model.intercept_[0]))
+
+        return intra_ps, intra_ks
 
         # plt.figure(figsize=(10, 8), dpi=200)
 
