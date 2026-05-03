@@ -111,7 +111,7 @@ class RentsRuleCalculator(object):
                     block = next(iter(blocks_intercell_cnt))
                     intercell_num_pins[block] += 1
                 for block in blocks_intercell_cnt:
-                    if blocks_intercell_cnt[(i, j, b)][0]:
+                    if blocks_intercell_cnt[block][0]:
                         intercell_num_pins[block] += 1
 
         intercell_num_nodes_list = []
@@ -127,46 +127,48 @@ class RentsRuleCalculator(object):
         return intercell_num_nodes_list, intercell_num_pins_list
 
     def approximate(self):
+        def _filter_positive(nodes, pins):
+            pairs = [(n, p) for n, p in zip(nodes, pins) if n > 0 and p > 0]
+            if not pairs:
+                return [], []
+            ns, ps = zip(*pairs)
+            return list(ns), list(ps)
+
         # block
-        block_log_gates = np.log(self.block_num_nodes_list).reshape(-1, 1)
-        block_log_pins = np.log(self.block_num_pins_list).reshape(-1, 1)
+        bn, bp = _filter_positive(self.block_num_nodes_list, self.block_num_pins_list)
+        block_log_gates = np.log(bn).reshape(-1, 1)
+        block_log_pins = np.log(bp).reshape(-1, 1)
         model = LinearRegression()
         model.fit(block_log_gates, block_log_pins)
         self.block_p = model.coef_[0][0]
         self.block_k = np.exp(model.intercept_[0])
         print(f"Approximated Rent's exponent (block p): {self.block_p:.2f}")
         print(f"Approximated Rent's coefficient (block dk): {self.block_k:.2f}")
-        block_gates_range = np.linspace(
-            min(self.block_num_nodes_list), max(self.block_num_nodes_list), 100
-        )
+        block_gates_range = np.linspace(min(bn), max(bn), 100)
         block_approximated_pins = self.block_k * block_gates_range**self.block_p
 
         # cluster
-        cluster_log_gates = np.log(self.cluster_size).reshape(-1, 1)
-        cluster_log_pins = np.log(self.cluster_num_pins).reshape(-1, 1)
+        cn, cp = _filter_positive(self.cluster_size, self.cluster_num_pins)
+        cluster_log_gates = np.log(cn).reshape(-1, 1)
+        cluster_log_pins = np.log(cp).reshape(-1, 1)
         model.fit(cluster_log_gates, cluster_log_pins)
         self.cluster_p = model.coef_[0][0]
         self.cluster_k = np.exp(model.intercept_[0])
         print(f"Approximated Rent's exponent (cluster p): {self.cluster_p:.2f}")
         print(f"Approximated Rent's coefficient (cluster k): {self.cluster_k:.2f}")
-        cluster_gates_range = np.linspace(
-            0.1 * min(self.cluster_size), 2 * max(self.cluster_size), 100
-        )
+        cluster_gates_range = np.linspace(0.1 * min(cn), 2 * max(cn), 100)
         cluster_approximated_pins = self.cluster_k * cluster_gates_range**self.cluster_p
 
         # ICN
-        inter_log_gates = np.log(self.intercell_num_nodes_list).reshape(-1, 1)
-        inter_log_pins = np.log(self.intercell_num_pins_list).reshape(-1, 1)
+        in_, ip = _filter_positive(self.intercell_num_nodes_list, self.intercell_num_pins_list)
+        inter_log_gates = np.log(in_).reshape(-1, 1)
+        inter_log_pins = np.log(ip).reshape(-1, 1)
         model.fit(inter_log_gates, inter_log_pins)
         self.inter_p = model.coef_[0][0]
         self.inter_k = np.exp(model.intercept_[0])
         print(f"Approximated Rent's exponent (p): {self.inter_p:.2f}")
         print(f"Approximated Rent's coefficient (k): {self.inter_k:.2f}")
-        inter_gates_range = np.linspace(
-            min(self.intercell_num_nodes_list),
-            1.5 * max(self.intercell_num_nodes_list),
-            100,
-        )
+        inter_gates_range = np.linspace(min(in_), 1.5 * max(in_), 100)
         inter_approximated_pins = self.inter_k * inter_gates_range**self.inter_p
 
         # Plot
@@ -219,6 +221,7 @@ class RentsRuleCalculator(object):
         plt.xscale("log")
         plt.yscale("log")
         plt.legend(fontsize=14)
+        plt.show()
 
     def intra_rents(self):
 
@@ -235,15 +238,16 @@ class RentsRuleCalculator(object):
         # Precompute: for each cluster label, which net indices touch it
         cluster_nets_map = defaultdict(list)
         for net_idx, net in enumerate(self.cp.net_nodes):
-            seen_labels = set()
+            labels_in_net = set()
             for pin in net:
                 node = pin[0]
                 if node >= len(self.x_pos):
                     continue
                 label = self.cp.labels[node]
-                if label != -1 and label not in seen_labels:
-                    seen_labels.add(label)
-                    cluster_nets_map[label].append(net_idx)
+                if label != -1:
+                    labels_in_net.add(label)
+            for label in labels_in_net:
+                cluster_nets_map[label].append(net_idx)
 
         intra_ps = []
         intra_ks = []
@@ -260,28 +264,23 @@ class RentsRuleCalculator(object):
 
                 for net_idx in cluster_nets_map[target_label]:
                     net = self.cp.net_nodes[net_idx]
-                    blocks_intercell_cnt = defaultdict(lambda: [False, False])
+                    # windows containing nodes from target cluster on this net
+                    cluster_windows = set()
+                    # all windows touched by any node on this net
+                    all_windows = set()
                     for pin in net:
                         node = pin[0]
                         if node >= len(self.x_pos):
                             continue
                         i = int(self.x_pos[node] * b / self.W)
                         j = int(self.y_pos[node] * b / self.H)
+                        all_windows.add((i, j))
                         if self.cp.labels[node] == target_label:
-                            blocks_intercell_cnt[(i, j, b)][0] = True
-                        else:
-                            blocks_intercell_cnt[(i, j, b)][1] = True
-                    # ignore nets inside a cluster
-                    if (
-                        len(blocks_intercell_cnt) == 1
-                        and blocks_intercell_cnt[(i, j, b)][0]
-                        and blocks_intercell_cnt[(i, j, b)][1]
-                    ):
-                        block = next(iter(blocks_intercell_cnt))
-                        intercell_num_pins[block] += 1
-                    for block in blocks_intercell_cnt:
-                        if blocks_intercell_cnt[(i, j, b)][0]:
-                            intercell_num_pins[block] += 1
+                            cluster_windows.add((i, j))
+                    # T += 1 for each cluster window the net crosses out of
+                    for (ci, cj) in cluster_windows:
+                        if any((wi, wj) != (ci, cj) for (wi, wj) in all_windows):
+                            intercell_num_pins[(ci, cj, b)] += 1
 
             intercell_num_nodes_list = []
             intercell_num_pins_list = []

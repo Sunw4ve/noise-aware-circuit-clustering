@@ -109,13 +109,14 @@ def noise_cell_proportion(G, N, labels):
     Returns:
         _type_: proportion (float), number of failure (disconnected pairs) (int)
     """
-    l = np.random.randint(0, len(G.nodes), (N, 2))
+    nodes = list(G.nodes)
+    l = np.random.randint(0, len(nodes), (N, 2))
     noise_cnt = 0
     total_cnt = 0
     disconnect_cnt = 0
     for i, j in l:
         try:
-            shortest_path = nx.shortest_path(G, source=i, target=j)
+            shortest_path = nx.shortest_path(G, source=nodes[i], target=nodes[j])
         except nx.NetworkXNoPath:
             disconnect_cnt += 1
             continue
@@ -123,7 +124,7 @@ def noise_cell_proportion(G, N, labels):
             print(e)
             continue
         for node in shortest_path:
-            if labels[node] == -1:
+            if node < len(labels) and labels[node] == -1:
                 noise_cnt += 1
             total_cnt += 1
     return noise_cnt / total_cnt, disconnect_cnt
@@ -139,13 +140,13 @@ def remove_ICN_experiment(G, N, labels):
     """
     # Remove ICN
     G_copy = copy.deepcopy(G)
-    nodes_to_remove = [i for i in G_copy.nodes if labels[i] == -1]
+    nodes_to_remove = [i for i in G_copy.nodes if i < len(labels) and labels[i] == -1]
     G_copy.remove_nodes_from(nodes_to_remove)
     L_remove_icn, fail_remove_icn = avg_path_length(G_copy, N, labels)
 
     # Random remove
     G_copy_random = copy.deepcopy(G)
-    nodes_to_remove_count = sum(1 for i in G.nodes if labels[i] == -1)
+    nodes_to_remove_count = sum(1 for i in G.nodes if i < len(labels) and labels[i] == -1)
     nodes_to_remove_random = random.sample(
         list(G_copy_random.nodes), nodes_to_remove_count
     )

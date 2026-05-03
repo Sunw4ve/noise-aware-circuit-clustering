@@ -243,6 +243,10 @@ class Nets:
             new_net = Net(net_name)
             self.nets.append(new_net)
             self.net_dict[net_name] = new_net
+            # parse any comp/pins that appear on the same line as the net name
+            for item in info[2:]:
+                if isinstance(item, list):
+                    new_net.comp_pin.append(item)
         else:
             current_net = self.get_last_net()
             # parse next info

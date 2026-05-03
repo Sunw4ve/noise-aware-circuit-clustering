@@ -37,7 +37,7 @@ class ClusterParser(object):
             def_parser = DefParser(net_file)
             def_parser.parse()
         if def_parser and lef_parser:
-            self.__load_nodes_and_nets(lef_parser, def_parser)
+            self.__load_nodes_and_nets(lef_parser, def_parser, macro_criteria)
 
     def __comment_line(self, line):
         if (
@@ -57,6 +57,8 @@ class ClusterParser(object):
         self.node_size_x = []
         self.node_size_y = []
         self.node_type = []
+        self.node_cell_refs = []  # LEF macro name or empty string
+        self.node_extra = []      # extra info string (unused for .nodes format)
         self.node_name2id_map = {}
         with open(filename, "r") as file:
             lines = file.readlines()
@@ -78,12 +80,18 @@ class ClusterParser(object):
             # cell type
             if len(tokens) == 4:
                 self.node_type.append(TERMINAL)
+                self.node_cell_refs.append("")
+                self.node_extra.append("")
             elif macro_criteria is not None and (
                 width >= macro_criteria or height >= macro_criteria
             ):
                 self.node_type.append(MACRO)
+                self.node_cell_refs.append("")
+                self.node_extra.append("")
             else:
                 self.node_type.append(STD_CELL)
+                self.node_cell_refs.append("")
+                self.node_extra.append("")
         self.num_std_cells = self.node_type.count(STD_CELL)
         self.num_macros = self.node_type.count(MACRO)
         self.num_terminals = self.node_type.count(TERMINAL)
@@ -134,25 +142,105 @@ class ClusterParser(object):
             self.net_name2id_map[current_net_name] = len(self.net_names) - 1
             self.net_nodes.append(current_net_nodes)
             
-    def __load_nodes_and_nets(self, lef_parser, def_parser):
+    def __load_nodes_and_nets(self, lef_parser, def_parser, macro_criteria=None):
         """
         Load nodes and nets from LEF/DEF parsers
         """
-        # nodes
+        def_scale = float(def_parser.scale)  # DBU per micron e.g. 2000
+
+        # --- Nodes: DEF components ---
         self.node_names = []
         self.node_size_x = []
         self.node_size_y = []
         self.node_type = []
+        self.node_cell_refs = []  # LEF macro name per node
+        self.node_extra = []     # extra info string (e.g. pin direction/use)
         self.node_name2id_map = {}
-        # nets
-        current_net_name = None
-        current_net_nodes = []
+
+        for comp in def_parser.components:
+            macro_ref = lef_parser.macro_dict.get(comp.macro)
+            if macro_ref and "SIZE" in macro_ref.info:
+                w_um, h_um = macro_ref.info["SIZE"]
+            else:
+                w_um, h_um = 0.0, 0.0
+            w_dbu = int(w_um * def_scale)
+            h_dbu = int(h_um * def_scale)
+
+            self.node_name2id_map[comp.name] = len(self.node_names)
+            self.node_names.append(comp.name)
+            self.node_size_x.append(w_dbu)
+            self.node_size_y.append(h_dbu)
+            self.node_cell_refs.append(comp.macro if comp.macro else "")
+
+            cell_class = macro_ref.info.get("CLASS", "") if macro_ref else ""
+            self.node_extra.append(cell_class)
+            if cell_class in ("BLOCK", "PAD", "ENDCAP", "CORNER"):
+                self.node_type.append(MACRO)
+            elif macro_criteria is not None and (w_um >= macro_criteria or h_um >= macro_criteria):
+                self.node_type.append(MACRO)
+            else:
+                self.node_type.append(STD_CELL)
+
+        # --- Terminals: DEF I/O pins ---
+        if def_parser.pins:
+            for pin in def_parser.pins:
+                self.node_name2id_map[pin.name] = len(self.node_names)
+                self.node_names.append(pin.name)
+                self.node_size_x.append(0)
+                self.node_size_y.append(0)
+                self.node_type.append(TERMINAL)
+                self.node_cell_refs.append("")
+                direction = getattr(pin, 'direction', None) or ""
+                use = getattr(pin, 'use', None) or ""
+                extra = " / ".join(filter(None, [direction, use]))
+                self.node_extra.append(extra)
+
+        self.num_std_cells = self.node_type.count(STD_CELL)
+        self.num_macros = self.node_type.count(MACRO)
+        self.num_terminals = self.node_type.count(TERMINAL)
+
+        # --- Build pin offset lookup: (macro_name, pin_name) -> (cx_dbu, cy_dbu, direction) ---
+        _dir_map = {"OUTPUT": "O", "INPUT": "I", "INOUT": "B", "OUTPUT TRISTATE": "O"}
+        pin_offset_map = {}
+        for macro_name, macro in lef_parser.macro_dict.items():
+            for pin in macro.info.get('PIN', []):
+                try:
+                    port = pin.info['PORT']
+                    layer = port.info['LAYER'][0]
+                    rect = layer.shapes[0]
+                    (x1, y1), (x2, y2) = rect.points
+                    cx = (x1 + x2) / 2.0 * def_scale
+                    cy = (y1 + y2) / 2.0 * def_scale
+                    direction = _dir_map.get(pin.info.get('DIRECTION', ''), 'B')
+                    pin_offset_map[(macro_name, pin.name)] = (cx, cy, direction)
+                except (KeyError, IndexError):
+                    pass
+
+        # --- Nets: DEF nets ---
         self.net_names = []
         self.net_name2id_map = {}
         self.net_nodes = []
-        
-        print(def_parser.components.num_comps)
-        
+
+        if def_parser.nets:
+            for net in def_parser.nets:
+                net_pins = []
+                for comp_pin in net.comp_pin:
+                    if len(comp_pin) < 2:
+                        continue
+                    comp_name, pin_name = comp_pin[0], comp_pin[1]
+                    node_id = self.node_name2id_map.get(comp_name)
+                    if node_id is None:
+                        continue
+                    macro_name = self.node_cell_refs[node_id]
+                    entry = pin_offset_map.get((macro_name, pin_name), (0.0, 0.0, 'B'))
+                    ox = entry[0] - self.node_size_x[node_id] / 2.0
+                    oy = entry[1] - self.node_size_y[node_id] / 2.0
+                    direction = entry[2]
+                    net_pins.append((node_id, ox, oy, direction))
+                self.net_names.append(net.name)
+                self.net_name2id_map[net.name] = len(self.net_names) - 1
+                self.net_nodes.append(net_pins)
+
 
     def load_terminals(self, filename: str, is_terminal=None):
         """Load the position of terminals. (deprecated)
