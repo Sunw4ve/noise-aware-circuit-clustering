@@ -365,7 +365,7 @@ class ClusterParser(object):
         self.unique_labels = np.unique(self.labels)
         self.noise_points = self.data[self.labels == -1]
 
-    def plot_snapshot(self, i=None, labels=None, noise=True, macro=True, title=None, output_file=None):
+    def plot_snapshot(self, i=None, labels=None, noise=True, macro=True, output_file=None):
         """Plot the placement snapshot with clustering to see how clustering evolve with DREAMPlace placement.
 
         Args:
@@ -373,12 +373,11 @@ class ClusterParser(object):
             labels (list[int], optional): labels of clusters to be plotted. Defaults to plot all of the clusters.
             noise (bool, optional): whether plot noise points. Defaults to True.
             macro (bool, optional): whether plot macros. Defaults to False.
-            title (str, optional): plot title. Defaults to None.
             output_file (str, optional): store to output_file if not None.
         """
         if not i:
             i = self.num_snapshots - 1
-        if labels is None:
+        if not labels:
             labels = self.unique_labels
             
         plt.figure(figsize=(16, 16), dpi=200)
@@ -422,8 +421,6 @@ class ClusterParser(object):
         lim = np.max((self.data))
         plt.xlim(lim * 0.00, lim * 1.0)
         plt.ylim(lim * 0.00, lim * 1.0)
-        if title:
-            plt.title(title)
         # plt.legend()
         if not output_file:
             plt.show()
