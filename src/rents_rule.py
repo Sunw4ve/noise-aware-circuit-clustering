@@ -298,8 +298,13 @@ class RentsRuleCalculator(object):
             intra_log_pins = np.log(intercell_num_pins_list).reshape(-1, 1)
             model = LinearRegression()
             model.fit(intra_log_gates, intra_log_pins)
-            intra_ps.append(model.coef_[0][0])
-            intra_ks.append(np.exp(model.intercept_[0]))
+            p = model.coef_[0][0]
+            log_k = model.intercept_[0]
+            # skip degenerate fits (p outside [0,1] or log_k implausibly large)
+            if not (0.0 <= p <= 1.0) or log_k > 20:
+                continue
+            intra_ps.append(p)
+            intra_ks.append(np.exp(log_k))
 
         return intra_ps, intra_ks
 
