@@ -713,3 +713,596 @@ def generate_path_visualization(cp, design_name, output_html="path_visualization
     limit_str = f"degree > {max_net_degree}" if max_net_degree is not None else "none"
     print(f"Saved to {output_html}")
     print(f"  {len(path_adj)} nodes in path graph, {skipped_nets} high-fanout nets skipped ({limit_str})")
+
+
+def generate_module_visualization(cp, design_name, module_csv, output_html="module_visualization.html"):
+    """Generate an interactive HTML visualization colored by Verilog module from a CSV.
+
+    Args:
+        cp: ClusterParser with loaded positions, nets, and clustering labels.
+        design_name: Name of the design (used in the title).
+        module_csv: Path to cell_id_map.csv (columns: short_id, hier_name, module, group).
+        output_html: Path to write the HTML file.
+    """
+    import csv as _csv
+
+    i = cp.num_snapshots - 1
+    col_x = i * 2
+    col_y = i * 2 + 1
+
+    # --- Load module CSV ---
+    cell_to_group = {}
+    cell_to_module = {}
+    cell_to_conf = {}
+    with open(module_csv, newline='') as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            key = row['short_id']
+            cell_to_group[key] = row['group']
+            cell_to_module[key] = row['module']
+            cell_to_conf[key] = row.get('hier_name', '')
+
+    # Assign group for each node
+    UNKNOWN_GROUP = 'unknown'
+    node_groups = []
+    for node_id in range(len(cp.node_names)):
+        name = cp.node_names[node_id] if node_id < len(cp.node_names) else ''
+        node_groups.append(cell_to_group.get(name, UNKNOWN_GROUP))
+
+    all_groups = sorted(set(node_groups))
+    n_groups = len(all_groups)
+
+    # Distinct color palette per group
+    _GROUP_PALETTE = {
+        'main_sbox':  'rgb(31,119,180)',
+        'kexp_sbox':  'rgb(214,39,40)',
+        'key_expand': 'rgb(255,127,14)',
+        'top':        'rgb(44,160,44)',
+        'rcon':       'rgb(0,200,200)',
+        'unknown':    'rgb(180,180,180)',
+    }
+
+    def _group_color(idx, total):
+        h = idx / max(total, 1)
+        r, g, b = colorsys.hsv_to_rgb(h, 0.75, 0.88)
+        return f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+
+    group_to_color = {}
+    for j, g in enumerate(all_groups):
+        group_to_color[g] = _GROUP_PALETTE.get(g, _group_color(j, n_groups))
+
+    # --- Build per-node connection data ---
+    node_connections = defaultdict(set)
+    for net in cp.net_nodes:
+        ids_in_net = [nid for nid, _, _, _ in net if nid < len(cp.labels)]
+        for a in ids_in_net:
+            for b in ids_in_net:
+                if a != b:
+                    node_connections[a].add(b)
+
+    # --- Per-node JS data ---
+    has_cell_refs = hasattr(cp, 'node_cell_refs') and len(cp.node_cell_refs) == len(cp.node_names)
+
+    node_info_js = {}
+    for node_id in range(len(cp.node_names)):
+        name = cp.node_names[node_id] if node_id < len(cp.node_names) else str(node_id)
+        node_info_js[str(node_id)] = {
+            'name': name,
+            'group': node_groups[node_id],
+            'module': cell_to_module.get(name, '—'),
+            'conf': cell_to_conf.get(name, '—'),
+            'ref': (cp.node_cell_refs[node_id] if has_cell_refs and node_id < len(cp.node_cell_refs) else ''),
+        }
+
+    # Per-group scatter data for JS click handler
+    group_conn_js = {}
+    group_pos_js = {}
+    group_info_js = {}
+    for g in all_groups:
+        g_ids = [nid for nid, grp in enumerate(node_groups) if grp == g and nid < len(cp.labels)]
+        conns, positions, infos = {}, {}, {}
+        for scatter_idx, node_id in enumerate(g_ids):
+            positions[str(scatter_idx)] = [float(cp.data[node_id, col_x]), float(cp.data[node_id, col_y])]
+            infos[str(scatter_idx)] = node_info_js[str(node_id)]
+            if node_id in node_connections:
+                ix, iy = float(cp.data[node_id, col_x]), float(cp.data[node_id, col_y])
+                lines = []
+                for t in node_connections[node_id]:
+                    lines.append([ix, iy, float(cp.data[t, col_x]), float(cp.data[t, col_y])])
+                conns[str(scatter_idx)] = lines
+        group_conn_js[g] = conns
+        group_pos_js[g] = positions
+        group_info_js[g] = infos
+
+    # --- Build Plotly figure ---
+    fig = go.Figure()
+
+    group_trace_map = {}  # trace_index -> group name
+    for j, g in enumerate(all_groups):
+        mask = np.array([grp == g for grp in node_groups])
+        fig.add_trace(go.Scattergl(
+            x=cp.data[mask, col_x],
+            y=cp.data[mask, col_y],
+            mode='markers',
+            marker=dict(size=2, color=group_to_color[g], opacity=0.85),
+            name=f'{g} ({mask.sum()})',
+            hovertemplate='x=%{x:.0f}<br>y=%{y:.0f}<extra>' + g + '</extra>',
+        ))
+        group_trace_map[str(j)] = g
+
+    # Connection lines trace
+    line_trace_idx = len(all_groups)
+    fig.add_trace(go.Scattergl(
+        x=[], y=[],
+        mode='lines',
+        line=dict(color='rgba(255,50,50,0.7)', width=1.5),
+        hoverinfo='skip',
+        name='Connections',
+        showlegend=False,
+    ))
+
+    # Highlight marker trace
+    highlight_trace_idx = line_trace_idx + 1
+    fig.add_trace(go.Scattergl(
+        x=[], y=[],
+        mode='markers',
+        marker=dict(size=12, color='red', symbol='circle'),
+        hoverinfo='skip',
+        name='Selected',
+        showlegend=False,
+    ))
+
+    fig.update_layout(
+        title=f'{design_name} — Colored by Verilog Module | Click any cell to see connections',
+        xaxis=dict(title='X', scaleanchor='y', scaleratio=1, autorange=True),
+        yaxis=dict(title='Y', autorange=True),
+        width=1200, height=1000,
+        template='plotly_white',
+        legend=dict(itemsizing='constant'),
+        uirevision='static',
+    )
+
+    config = {'modeBarButtonsToRemove': ['autoScale2d'], 'displaylogo': False}
+    html_str = fig.to_html(include_plotlyjs=True, full_html=True, config=config)
+
+    custom_js = f"""
+    <script>
+    (function() {{
+        var groupConns   = {json.dumps(group_conn_js)};
+        var groupPos     = {json.dumps(group_pos_js)};
+        var groupInfo    = {json.dumps(group_info_js)};
+        var groupTraceMap = {json.dumps(group_trace_map)};
+        var lineTraceIdx  = {line_trace_idx};
+        var hlTraceIdx    = {highlight_trace_idx};
+
+        var gd = document.querySelectorAll('.plotly-graph-div')[0];
+
+        var btn = document.createElement('button');
+        btn.innerText = 'Reset Selection';
+        btn.style.cssText = 'position:fixed;top:12px;right:20px;z-index:9999;padding:8px 16px;font-size:14px;cursor:pointer;background:#e74c3c;color:white;border:none;border-radius:4px;display:none;';
+        document.body.appendChild(btn);
+
+        var panel = document.createElement('div');
+        panel.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:9999;background:rgba(255,255,255,0.96);border:1px solid #ccc;border-radius:6px;padding:12px 16px;font-family:monospace;font-size:13px;min-width:220px;max-width:360px;box-shadow:0 2px 8px rgba(0,0,0,0.18);display:none;line-height:1.6;';
+        document.body.appendChild(panel);
+
+        function showPanel(info) {{
+            var h = '<b style="font-size:14px;">' + (info.name || '—') + '</b><br>';
+            h += '<span style="color:#555;">Group:</span> <b>' + (info.group || '—') + '</b><br>';
+            h += '<span style="color:#555;">Module:</span> ' + (info.module || '—') + '<br>';
+            if (info.conf) h += '<span style="color:#555;">Hier name:</span> ' + info.conf + '<br>';
+            if (info.ref) h += '<span style="color:#555;">Cell ref:</span> ' + info.ref + '<br>';
+            panel.innerHTML = h;
+            panel.style.display = 'block';
+        }}
+
+        function reset() {{
+            Plotly.restyle(gd, {{x: [[]], y: [[]]}}, [lineTraceIdx]);
+            Plotly.restyle(gd, {{x: [[]], y: [[]]}}, [hlTraceIdx]);
+            btn.style.display = 'none';
+            panel.style.display = 'none';
+        }}
+
+        gd.on('plotly_click', function(data) {{
+            var pt = data.points[0];
+            var curve = String(pt.curveNumber);
+            var idx   = String(pt.pointIndex);
+            var g = groupTraceMap[curve];
+            if (!g) return;
+            var pos   = groupPos[g];
+            var conns = groupConns[g];
+            var info  = (groupInfo[g] && groupInfo[g][idx]) ? groupInfo[g][idx] : {{}};
+            showPanel(info);
+            var p = pos[idx];
+            if (p) Plotly.restyle(gd, {{x: [[p[0]]], y: [[p[1]]]}}, [hlTraceIdx]);
+            if (conns && conns[idx]) {{
+                var lx = [], ly = [];
+                conns[idx].forEach(function(seg) {{
+                    lx.push(seg[0], seg[2], null);
+                    ly.push(seg[1], seg[3], null);
+                }});
+                Plotly.restyle(gd, {{x: [lx], y: [ly]}}, [lineTraceIdx]);
+            }} else {{
+                Plotly.restyle(gd, {{x: [[]], y: [[]]}}, [lineTraceIdx]);
+            }}
+            btn.style.display = 'block';
+        }});
+
+        btn.addEventListener('click', reset);
+        document.addEventListener('keydown', function(e) {{ if (e.key === 'Escape') reset(); }});
+
+        // Prevent axis zoom-to-fit when toggling legend items
+        gd.on('plotly_legendclick', function() {{
+            var xr = gd._fullLayout.xaxis.range.slice();
+            var yr = gd._fullLayout.yaxis.range.slice();
+            setTimeout(function() {{
+                Plotly.relayout(gd, {{'xaxis.range': xr, 'yaxis.range': yr}});
+            }}, 50);
+        }});
+        gd.on('plotly_legenddoubleclick', function() {{
+            var xr = gd._fullLayout.xaxis.range.slice();
+            var yr = gd._fullLayout.yaxis.range.slice();
+            setTimeout(function() {{
+                Plotly.relayout(gd, {{'xaxis.range': xr, 'yaxis.range': yr}});
+            }}, 50);
+        }});
+    }})();
+    </script>
+    """
+
+    html_str = html_str.replace('</body>', custom_js + '</body>')
+    with open(output_html, 'w') as f:
+        f.write(html_str)
+    labeled = sum(1 for g in node_groups if g != UNKNOWN_GROUP)
+    print(f"Saved to {output_html}")
+    print(f"  {len(all_groups)} groups: {', '.join(all_groups)}")
+    print(f"  {labeled}/{len(node_groups)} cells labeled ({labeled/len(node_groups)*100:.1f}%)")
+
+
+def generate_cluster_module_visualization(cp, design_name, module_csv, output_html="cluster_module_visualization.html"):
+    """Interactive HTML: cells colored by true Verilog module, filterable by cluster or ICN.
+
+    Args:
+        cp: ClusterParser with loaded positions, nets, and clustering labels.
+        design_name: Name of the design (used in the title).
+        module_csv: Path to cell_id_map.csv (columns: short_id, hier_name, module, group).
+        output_html: Path to write the HTML file.
+    """
+    import csv as _csv
+
+    i = cp.num_snapshots - 1
+    col_x = i * 2
+    col_y = i * 2 + 1
+
+    # --- Load module CSV ---
+    cell_to_group = {}
+    cell_to_module = {}
+    cell_to_conf = {}
+    with open(module_csv, newline='') as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            key = row['short_id']
+            cell_to_group[key] = row['group']
+            cell_to_module[key] = row['module']
+            cell_to_conf[key] = row.get('hier_name', '')
+
+    UNKNOWN_GROUP = 'unknown'
+    node_groups = []
+    for node_id in range(len(cp.node_names)):
+        name = cp.node_names[node_id] if node_id < len(cp.node_names) else ''
+        node_groups.append(cell_to_group.get(name, UNKNOWN_GROUP))
+
+    # --- Module color palette ---
+    _MODULE_PALETTE = {
+        'main_sbox':  'rgb(31,119,180)',
+        'kexp_sbox':  'rgb(214,39,40)',
+        'key_expand': 'rgb(255,127,14)',
+        'top':        'rgb(44,160,44)',
+        'rcon':       'rgb(0,200,200)',
+        'io_regs':    'rgb(180,180,180)',
+        'unknown':    'rgb(150,150,150)',
+    }
+    all_groups = sorted(set(node_groups))
+
+    def _group_color(idx, total):
+        h = idx / max(total, 1)
+        r, g, b = colorsys.hsv_to_rgb(h, 0.75, 0.88)
+        return f"rgb({int(r*255)},{int(g*255)},{int(b*255)})"
+
+    group_to_color = {}
+    for j, g in enumerate(all_groups):
+        group_to_color[g] = _MODULE_PALETTE.get(g, _group_color(j, len(all_groups)))
+
+    # --- Per-node connections (clique model) ---
+    node_connections = defaultdict(set)
+    for net in cp.net_nodes:
+        ids_in_net = [nid for nid, _, _, _ in net if nid < len(cp.labels)]
+        for a in ids_in_net:
+            for b in ids_in_net:
+                if a != b:
+                    node_connections[a].add(b)
+
+    has_cell_refs = hasattr(cp, 'node_cell_refs') and len(cp.node_cell_refs) == len(cp.node_names)
+
+    # --- Per-cluster data for Plotly + JS ---
+    cluster_labels = sorted([l for l in cp.unique_labels if l != -1])
+    all_trace_labels = cluster_labels + [-1]   # -1 = ICN, last trace
+
+    trace_conn_js = {}
+    trace_pos_js = {}
+    trace_info_js = {}
+
+    fig = go.Figure()
+
+    for trace_idx, label in enumerate(all_trace_labels):
+        if label == -1:
+            mask = cp.labels == -1
+            trace_name = f'ICN ({mask.sum()})'
+        else:
+            mask = cp.labels == label
+            trace_name = f'Cluster {label} ({mask.sum()})'
+
+        node_ids = list(np.where(mask)[0])
+        colors = [group_to_color[node_groups[nid]] for nid in node_ids]
+        names  = [cp.node_names[nid] if nid < len(cp.node_names) else str(nid) for nid in node_ids]
+
+        fig.add_trace(go.Scattergl(
+            x=cp.data[mask, col_x],
+            y=cp.data[mask, col_y],
+            mode='markers',
+            marker=dict(size=3 if label == -1 else 2, color=colors, opacity=0.9),
+            name=trace_name,
+            hovertemplate='<b>%{customdata[0]}</b><br>module: %{customdata[1]}<br>x=%{x:.0f}, y=%{y:.0f}<extra>' + trace_name + '</extra>',
+            customdata=[[names[k], cell_to_module.get(names[k], '—')] for k in range(len(node_ids))],
+            visible=True,
+            showlegend=False,
+        ))
+
+        # JS data for click handler
+        conns, positions, infos = {}, {}, {}
+        for scatter_idx, nid in enumerate(node_ids):
+            positions[str(scatter_idx)] = [float(cp.data[nid, col_x]), float(cp.data[nid, col_y])]
+            name = cp.node_names[nid] if nid < len(cp.node_names) else str(nid)
+            infos[str(scatter_idx)] = {
+                'name': name,
+                'group': node_groups[nid],
+                'module': cell_to_module.get(name, '—'),
+                'conf': cell_to_conf.get(name, '—'),
+                'cluster': int(label),
+                'ref': (cp.node_cell_refs[nid] if has_cell_refs and nid < len(cp.node_cell_refs) else ''),
+            }
+            if nid in node_connections:
+                ix, iy = float(cp.data[nid, col_x]), float(cp.data[nid, col_y])
+                conns[str(scatter_idx)] = [
+                    [ix, iy, float(cp.data[t, col_x]), float(cp.data[t, col_y])]
+                    for t in node_connections[nid]
+                ]
+        trace_conn_js[str(trace_idx)] = conns
+        trace_pos_js[str(trace_idx)]  = positions
+        trace_info_js[str(trace_idx)] = infos
+
+    n_cluster_traces = len(all_trace_labels)
+    line_trace_idx = n_cluster_traces
+    hl_trace_idx   = n_cluster_traces + 1
+
+    fig.add_trace(go.Scattergl(
+        x=[], y=[], mode='lines',
+        line=dict(color='rgba(255,50,50,0.7)', width=1.5),
+        hoverinfo='skip', name='Connections', showlegend=False,
+    ))
+    fig.add_trace(go.Scattergl(
+        x=[], y=[], mode='markers',
+        marker=dict(size=12, color='red', symbol='circle'),
+        hoverinfo='skip', name='Selected', showlegend=False,
+    ))
+
+    fig.update_layout(
+        title=f'{design_name} — Module colors, cluster filter | Click cell for connections',
+        xaxis=dict(title='X', scaleanchor='y', scaleratio=1),
+        yaxis=dict(title='Y'),
+        width=1200, height=1000,
+        template='plotly_white',
+        uirevision='static',
+    )
+
+    config = {'modeBarButtonsToRemove': ['autoScale2d'], 'displaylogo': False}
+    html_str = fig.to_html(include_plotlyjs=True, full_html=True, config=config)
+
+    # Build JS cluster label list for button bar
+    cluster_labels_js = [int(l) for l in cluster_labels]
+    module_legend_html = ''.join(
+        f'<span style="display:inline-flex;align-items:center;margin:3px 8px 3px 0;">'
+        f'<span style="width:12px;height:12px;border-radius:50%;background:{group_to_color[g]};display:inline-block;margin-right:5px;"></span>'
+        f'{g}</span>'
+        for g in sorted(group_to_color)
+    )
+
+    custom_js = f"""
+    <script>
+    (function() {{
+        var traceConns  = {json.dumps(trace_conn_js)};
+        var tracePos    = {json.dumps(trace_pos_js)};
+        var traceInfo   = {json.dumps(trace_info_js)};
+        var nClusterTraces = {n_cluster_traces};
+        var lineTraceIdx   = {line_trace_idx};
+        var hlTraceIdx     = {hl_trace_idx};
+        var clusterLabels  = {json.dumps(cluster_labels_js)};   // excludes -1
+        var icnTraceIdx    = {n_cluster_traces - 1};             // ICN is last cluster trace
+
+        var gd = document.querySelectorAll('.plotly-graph-div')[0];
+        var activeTrace = null;   // null = show all
+
+        // ---- Module color legend (top-left) ----
+        var legend = document.createElement('div');
+        legend.style.cssText = [
+            'position:fixed;top:60px;left:16px;z-index:9999;',
+            'background:rgba(255,255,255,0.95);border:1px solid #ccc;border-radius:6px;',
+            'padding:8px 12px;font-family:sans-serif;font-size:12px;',
+            'box-shadow:0 2px 6px rgba(0,0,0,0.12);max-width:220px;line-height:1.8;'
+        ].join('');
+        legend.innerHTML = '<b style="font-size:13px;">Module</b><br>{module_legend_html}';
+        document.body.appendChild(legend);
+
+        // ---- Cluster filter bar (top-centre) ----
+        var bar = document.createElement('div');
+        bar.style.cssText = [
+            'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:9999;',
+            'background:rgba(255,255,255,0.97);border:1px solid #aaa;border-radius:6px;',
+            'padding:6px 10px;font-family:sans-serif;font-size:12px;',
+            'box-shadow:0 2px 8px rgba(0,0,0,0.14);display:flex;flex-wrap:wrap;gap:4px;',
+            'max-width:900px;justify-content:center;'
+        ].join('');
+        document.body.appendChild(bar);
+
+        function makeBtn(label, traceIdx) {{
+            var b = document.createElement('button');
+            b.innerText = label;
+            b.dataset.traceIdx = String(traceIdx);
+            b.style.cssText = [
+                'padding:3px 8px;font-size:11px;cursor:pointer;border-radius:3px;',
+                'border:1px solid #aaa;background:#f5f5f5;color:#333;'
+            ].join('');
+            b.addEventListener('click', function() {{
+                var xr = gd._fullLayout.xaxis.range.slice();
+                var yr = gd._fullLayout.yaxis.range.slice();
+                var ti = parseInt(this.dataset.traceIdx);
+                if (activeTrace === ti) {{
+                    // deselect — show all
+                    activeTrace = null;
+                    showAll();
+                    markActive(null);
+                }} else {{
+                    activeTrace = ti;
+                    showOnly(ti);
+                    markActive(ti);
+                }}
+                setTimeout(function() {{
+                    Plotly.relayout(gd, {{'xaxis.range': xr, 'yaxis.range': yr}});
+                }}, 50);
+                reset();
+            }});
+            return b;
+        }}
+
+        // "All" button
+        var allBtn = document.createElement('button');
+        allBtn.innerText = 'All';
+        allBtn.style.cssText = [
+            'padding:3px 10px;font-size:11px;cursor:pointer;border-radius:3px;',
+            'border:1px solid #555;background:#333;color:#fff;font-weight:bold;'
+        ].join('');
+        allBtn.addEventListener('click', function() {{
+            var xr = gd._fullLayout.xaxis.range.slice();
+            var yr = gd._fullLayout.yaxis.range.slice();
+            activeTrace = null;
+            showAll();
+            markActive(null);
+            setTimeout(function() {{
+                Plotly.relayout(gd, {{'xaxis.range': xr, 'yaxis.range': yr}});
+            }}, 50);
+            reset();
+        }});
+        bar.appendChild(allBtn);
+
+        clusterLabels.forEach(function(lbl, j) {{
+            bar.appendChild(makeBtn('C' + lbl, j));
+        }});
+        bar.appendChild(makeBtn('ICN', icnTraceIdx));
+
+        function markActive(ti) {{
+            bar.querySelectorAll('button').forEach(function(b, idx) {{
+                if (idx === 0) {{
+                    b.style.background = (ti === null) ? '#333' : '#f5f5f5';
+                    b.style.color      = (ti === null) ? '#fff' : '#333';
+                }} else {{
+                    var bti = parseInt(b.dataset.traceIdx);
+                    b.style.background = (bti === ti) ? '#1a6fc4' : '#f5f5f5';
+                    b.style.color      = (bti === ti) ? '#fff'    : '#333';
+                }}
+            }});
+        }}
+
+        function showAll() {{
+            var vis = [];
+            for (var k = 0; k < nClusterTraces; k++) vis.push(true);
+            vis.push(false); vis.push(false);  // line + hl traces stay hidden
+            Plotly.restyle(gd, {{visible: vis}});
+        }}
+
+        function showOnly(ti) {{
+            var vis = [];
+            for (var k = 0; k < nClusterTraces; k++) vis.push(k === ti);
+            vis.push(false); vis.push(false);
+            Plotly.restyle(gd, {{visible: vis}});
+        }}
+
+        // ---- Info panel + connection lines ----
+        var panel = document.createElement('div');
+        panel.style.cssText = [
+            'position:fixed;bottom:20px;right:20px;z-index:9999;',
+            'background:rgba(255,255,255,0.96);border:1px solid #ccc;border-radius:6px;',
+            'padding:12px 16px;font-family:monospace;font-size:13px;',
+            'min-width:220px;max-width:360px;',
+            'box-shadow:0 2px 8px rgba(0,0,0,0.18);display:none;line-height:1.6;'
+        ].join('');
+        document.body.appendChild(panel);
+
+        var resetBtn = document.createElement('button');
+        resetBtn.innerText = 'Clear';
+        resetBtn.style.cssText = 'position:fixed;top:10px;right:20px;z-index:9999;padding:6px 14px;font-size:13px;cursor:pointer;background:#e74c3c;color:white;border:none;border-radius:4px;display:none;';
+        document.body.appendChild(resetBtn);
+
+        function reset() {{
+            Plotly.restyle(gd, {{x: [[]], y: [[]]}}, [lineTraceIdx]);
+            Plotly.restyle(gd, {{x: [[]], y: [[]]}}, [hlTraceIdx]);
+            resetBtn.style.display = 'none';
+            panel.style.display = 'none';
+        }}
+
+        gd.on('plotly_click', function(data) {{
+            var pt    = data.points[0];
+            var curve = String(pt.curveNumber);
+            var idx   = String(pt.pointIndex);
+            if (parseInt(curve) >= nClusterTraces) return;
+
+            var info  = (traceInfo[curve] && traceInfo[curve][idx]) ? traceInfo[curve][idx] : {{}};
+            var pos   = tracePos[curve];
+            var conns = traceConns[curve];
+
+            var clLabel = info.cluster === -1 ? '<i>ICN</i>' : String(info.cluster);
+            var h = '<b style="font-size:14px;">' + (info.name || '—') + '</b><br>';
+            h += '<span style="color:#555;">Group:</span> <b>' + (info.group || '—') + '</b><br>';
+            h += '<span style="color:#555;">Module:</span> ' + (info.module || '—') + '<br>';
+            if (info.conf) h += '<span style="color:#555;">Hier name:</span> ' + info.conf + '<br>';
+            h += '<span style="color:#555;">Cluster:</span> ' + clLabel + '<br>';
+            if (info.ref) h += '<span style="color:#555;">Cell ref:</span> ' + info.ref + '<br>';
+            panel.innerHTML = h;
+            panel.style.display = 'block';
+
+            var p = pos && pos[idx];
+            if (p) Plotly.restyle(gd, {{x: [[p[0]]], y: [[p[1]]]}}, [hlTraceIdx]);
+
+            if (conns && conns[idx]) {{
+                var lx = [], ly = [];
+                conns[idx].forEach(function(seg) {{
+                    lx.push(seg[0], seg[2], null);
+                    ly.push(seg[1], seg[3], null);
+                }});
+                Plotly.restyle(gd, {{x: [lx], y: [ly]}}, [lineTraceIdx]);
+            }} else {{
+                Plotly.restyle(gd, {{x: [[]], y: [[]]}}, [lineTraceIdx]);
+            }}
+            resetBtn.style.display = 'block';
+        }});
+
+        resetBtn.addEventListener('click', reset);
+        document.addEventListener('keydown', function(e) {{ if (e.key === 'Escape') reset(); }});
+    }})();
+    </script>
+    """
+
+    html_str = html_str.replace('</body>', custom_js + '</body>')
+    with open(output_html, 'w') as f:
+        f.write(html_str)
+    print(f"Saved to {output_html}")
+    print(f"  {len(cluster_labels)} clusters + ICN | {len(all_groups)} module groups")
